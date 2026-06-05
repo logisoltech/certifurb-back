@@ -4,9 +4,14 @@ const express = require("express");
 const http = require("http");
 const { Server } = require("socket.io");
 const { pool } = require("./lib/db");
+const {
+  isStorageConfigured,
+  uploadMulterFile,
+  listFiles,
+  storageBucket,
+} = require("./lib/storage");
 const cors = require("cors");
 const { OAuth2Client } = require("google-auth-library");
-const cloudinary = require("cloudinary").v2;
 const multer = require("multer");
 const nodemailer = require("nodemailer");
 const Imap = require("imap");
@@ -23,12 +28,13 @@ const io = new Server(server, {
 });
 const PORT = process.env.PORT;
 
-// Cloudinary configuration
-cloudinary.config({
-  cloud_name: process.env.CLOUDINARY_CLOUD_NAME || "your_cloud_name",
-  api_key: process.env.CLOUDINARY_API_KEY || "your_api_key",
-  api_secret: process.env.CLOUDINARY_API_SECRET || "your_api_secret",
-});
+if (!isStorageConfigured) {
+  console.warn(
+    "⚠️ Supabase storage is not configured. Set SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY (and create a public bucket, default: certifurb)."
+  );
+} else {
+  console.log(`✅ Supabase storage ready (bucket: ${storageBucket})`);
+}
 
 // Multer configuration for handling file uploads
 const storage = multer.memoryStorage();
@@ -58,6 +64,28 @@ app.use(cors({
 }));
 app.use(express.json({ limit: "10mb" }));
 app.use(express.urlencoded({ extended: true, limit: "10mb" }));
+
+const handleMulterError = (err, req, res, next) => {
+  if (!err) return next();
+  if (err.code === "LIMIT_FILE_SIZE") {
+    return res.status(400).json({
+      success: false,
+      message: "Image is too large. Maximum size is 5MB.",
+    });
+  }
+  if (err.message === "Only image files are allowed!") {
+    return res.status(400).json({
+      success: false,
+      message: "Only image files are allowed.",
+    });
+  }
+  console.error("Upload middleware error:", err);
+  return res.status(400).json({
+    success: false,
+    message: "Error uploading image",
+    error: err.message,
+  });
+};
 
 // Supabase PostgreSQL (see lib/db.js — uses DATABASE_URL or SUPABASE_URL + SUPABASE_DB_PASSWORD)
 (async () => {
@@ -943,20 +971,10 @@ app.put(
       // Handle image upload if new image is provided
       if (req.file) {
         try {
-          const uploadResult = await new Promise((resolve, reject) => {
-            cloudinary.uploader
-              .upload_stream(
-                {
-                  folder: "certifurb/products",
-                  resource_type: "image",
-                },
-                (error, result) => {
-                  if (error) reject(error);
-                  else resolve(result);
-                }
-              )
-              .end(req.file.buffer);
-          });
+          const uploadResult = await uploadMulterFile(
+            req.file,
+            "certifurb/products"
+          );
 
           productImageURL = uploadResult.secure_url;
           console.log("New image uploaded:", productImageURL);
@@ -1226,6 +1244,8 @@ app.get("/api/health", (req, res) => {
   res.json({
     success: true,
     message: "Server is running",
+    storage: isStorageConfigured ? "supabase" : "not_configured",
+    storageBucket: isStorageConfigured ? storageBucket : null,
     timestamp: new Date().toISOString(),
   });
 });
@@ -1415,113 +1435,75 @@ app.post("/api/auth/google", async (req, res) => {
 // Image Upload Endpoints
 
 // Upload single product image with user/review context
-app.post("/api/upload-image", upload.single("image"), async (req, res) => {
-  try {
-    if (!req.file) {
-      return res.status(400).json({
-        success: false,
-        message: "No image file provided",
-      });
+app.post("/api/upload-image", (req, res) => {
+  upload.single("image")(req, res, async (multerErr) => {
+    if (multerErr) {
+      return handleMulterError(multerErr, req, res, () => {});
     }
 
-    // Get user and review context from request body
-    const { userId, userEmail, reviewId, productId, context, folder } =
-      req.body;
-
-    // Determine folder structure
-    let cloudinaryFolder;
-    let tags;
-    let uploadContext;
-
-    if (folder === "products") {
-      // Product image upload
-      cloudinaryFolder = "certifurb/products";
-      tags = ["product", "cms_upload"];
-      uploadContext = {
-        uploadType: "product_image",
-        uploadedBy: "cms",
-        ...context,
-      };
-    } else {
-      // User review image upload (existing logic)
-      cloudinaryFolder = userId
-        ? `certifurb/reviews/user_${userId}`
-        : "certifurb/products";
-      tags = [
-        "review",
-        userId ? `user_${userId}` : "anonymous",
-        productId ? `product_${productId}` : "general",
-        reviewId ? `review_${reviewId}` : "no_review",
-      ];
-      uploadContext = {
-        userId: userId || "anonymous",
-        userEmail: userEmail || "anonymous",
-        reviewId: reviewId || "none",
-        productId: productId || "none",
-        uploadType: "review_image",
-        ...context,
-      };
-    }
-
-    // Upload to Cloudinary with appropriate context
-    const result = await cloudinary.uploader.upload_stream(
-      {
-        resource_type: "image",
-        folder: cloudinaryFolder,
-        tags: tags,
-        context: uploadContext,
-        transformation: [
-          { width: 800, height: 800, crop: "limit" },
-          { quality: "auto" },
-          { fetch_format: "auto" },
-        ],
-      },
-      (error, result) => {
-        if (error) {
-          console.error("Cloudinary upload error:", error);
-          return res.status(500).json({
-            success: false,
-            message: "Error uploading image to Cloudinary",
-            error: error.message,
-          });
-        }
-
-        res.json({
-          success: true,
-          message: "Image uploaded successfully",
-          data: {
-            url: result.secure_url,
-            secure_url: result.secure_url, // Include both for compatibility
-            publicId: result.public_id,
-            width: result.width,
-            height: result.height,
-            format: result.format,
-            size: result.bytes,
-            userId: userId,
-            reviewId: reviewId,
-            productId: productId,
-            tags: result.tags,
-            context: result.context,
-          },
+    try {
+      if (!isStorageConfigured) {
+        return res.status(500).json({
+          success: false,
+          message: "Image upload is not configured on the server",
         });
       }
-    );
 
-    const streamifier = require("streamifier");
-    streamifier.createReadStream(req.file.buffer).pipe(result);
-  } catch (error) {
-    console.error("Error uploading image:", error);
-    res.status(500).json({
-      success: false,
-      message: "Error uploading image",
-      error: error.message,
-    });
-  }
+      if (!req.file) {
+        return res.status(400).json({
+          success: false,
+          message: "No image file provided. Use form field name 'image'.",
+        });
+      }
+
+      const { userId, userEmail, reviewId, productId, folder } = req.body;
+
+      let storageFolder;
+      if (folder === "products") {
+        storageFolder = "certifurb/products";
+      } else if (userId) {
+        storageFolder = `certifurb/reviews/user_${userId}`;
+      } else {
+        storageFolder = "certifurb/products";
+      }
+
+      const result = await uploadMulterFile(req.file, storageFolder);
+
+      res.json({
+        success: true,
+        message: "Image uploaded successfully",
+        data: {
+          url: result.url,
+          secure_url: result.secure_url,
+          publicId: result.publicId,
+          path: result.path,
+          size: result.size,
+          userId,
+          reviewId,
+          productId,
+        },
+      });
+    } catch (error) {
+      console.error("Error uploading image:", error);
+      res.status(500).json({
+        success: false,
+        message: "Error uploading image",
+        error: error.message,
+      });
+    }
+  });
 });
 
 // Upload multiple review images
 app.post("/api/upload-images", upload.array("images", 5), async (req, res) => {
   try {
+    if (!isStorageConfigured) {
+      return res.status(500).json({
+        success: false,
+        message: "Image upload is not configured on the server",
+      });
+    }
+
     if (!req.files || req.files.length === 0) {
       return res.status(400).json({
         success: false,
@@ -1529,67 +1511,24 @@ app.post("/api/upload-images", upload.array("images", 5), async (req, res) => {
       });
     }
 
-    const { userId, userEmail, reviewId, productId, context } = req.body;
-    const folder = userId
+    const { userId } = req.body;
+    const storageFolder = userId
       ? `certifurb/reviews/user_${userId}`
       : "certifurb/products";
 
-    const uploadPromises = req.files.map((file) => {
-      return new Promise((resolve, reject) => {
-        const uploadStream = cloudinary.uploader.upload_stream(
-          {
-            resource_type: "image",
-            folder: folder,
-            tags: [
-              "review",
-              userId ? `user_${userId}` : "anonymous",
-              productId ? `product_${productId}` : "general",
-              reviewId ? `review_${reviewId}` : "no_review",
-            ],
-            context: {
-              userId: userId || "anonymous",
-              userEmail: userEmail || "anonymous",
-              reviewId: reviewId || "none",
-              productId: productId || "none",
-              uploadType: "review_image",
-              ...context,
-            },
-            transformation: [
-              { width: 800, height: 800, crop: "limit" },
-              { quality: "auto" },
-              { fetch_format: "auto" },
-            ],
-          },
-          (error, result) => {
-            if (error) {
-              reject(error);
-            } else {
-              resolve({
-                url: result.secure_url,
-                publicId: result.public_id,
-                width: result.width,
-                height: result.height,
-                format: result.format,
-                size: result.bytes,
-                userId: userId,
-                reviewId: reviewId,
-                productId: productId,
-              });
-            }
-          }
-        );
-
-        const streamifier = require("streamifier");
-        streamifier.createReadStream(file.buffer).pipe(uploadStream);
-      });
-    });
-
-    const uploadResults = await Promise.all(uploadPromises);
+    const uploadResults = await Promise.all(
+      req.files.map((file) => uploadMulterFile(file, storageFolder))
+    );
 
     res.json({
       success: true,
       message: `${uploadResults.length} images uploaded successfully`,
-      data: uploadResults,
+      data: uploadResults.map((result) => ({
+        url: result.url,
+        publicId: result.publicId,
+        path: result.path,
+        size: result.size,
+      })),
     });
   } catch (error) {
     console.error("Error uploading images:", error);
@@ -1609,7 +1548,7 @@ app.post("/api/save-review", async (req, res) => {
       productId,
       reviewText,
       rating,
-      imageUrls, // Array of Cloudinary URLs
+      imageUrls, // Array of image URLs
     } = req.body;
 
     if (!userEmail || !productId || !reviewText) {
@@ -1738,38 +1677,22 @@ app.get("/api/images/user/:userId", async (req, res) => {
   try {
     const { userId } = req.params;
     const { limit = 10, next_cursor } = req.query;
+    const offset = next_cursor ? parseInt(next_cursor, 10) : 0;
 
-    const options = {
-      expression: `tags:user_${userId}`,
-      max_results: parseInt(limit),
-      resource_type: "image",
-    };
+    const images = await listFiles(`certifurb/reviews/user_${userId}`, {
+      limit: parseInt(limit, 10),
+      offset: Number.isNaN(offset) ? 0 : offset,
+    });
 
-    if (next_cursor) {
-      options.next_cursor = next_cursor;
-    }
-
-    const result = await cloudinary.search.execute(options);
-
-    const images = result.resources.map((resource) => ({
-      publicId: resource.public_id,
-      url: resource.secure_url,
-      width: resource.width,
-      height: resource.height,
-      format: resource.format,
-      size: resource.bytes,
-      createdAt: resource.created_at,
-      tags: resource.tags || [],
-      context: resource.context || {},
-    }));
+    const nextOffset = offset + images.length;
 
     res.json({
       success: true,
       message: `Found ${images.length} images for user ${userId}`,
       data: {
         images,
-        hasMore: !!result.next_cursor,
-        nextCursor: result.next_cursor || null,
+        hasMore: images.length >= parseInt(limit, 10),
+        nextCursor: images.length >= parseInt(limit, 10) ? String(nextOffset) : null,
         userId,
       },
     });
