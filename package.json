@@ -1,0 +1,44 @@
+{
+  "name": "certifurb-backend",
+  "version": "1.0.0",
+  "description": "Simple Express.js backend for Certifurb",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js",
+    "dev": "nodemon server.js"
+  },
+  "keywords": [
+    "express",
+    "nodejs",
+    "sql-server",
+    "api",
+    "ecommerce"
+  ],
+  "author": "Certifurb Team",
+  "license": "MIT",
+  "dependencies": {
+    "@supabase/supabase-js": "^2.107.0",
+    "cloudinary": "^2.6.1",
+    "cors": "^2.8.5",
+    "dotenv": "^16.3.1",
+    "express": "^4.18.2",
+    "express-validator": "^7.0.1",
+    "google-auth-library": "^9.15.1",
+    "helmet": "^7.1.0",
+    "imap": "^0.8.19",
+    "mailparser": "^3.7.3",
+    "morgan": "^1.10.0",
+    "multer": "^2.0.0",
+    "mysql2": "^3.14.1",
+    "nodemailer": "^7.0.3",
+    "pg": "^8.21.0",
+    "socket.io": "^4.7.4",
+    "streamifier": "^0.1.1"
+  },
+  "devDependencies": {
+    "nodemon": "^3.0.2"
+  },
+  "engines": {
+    "node": ">=16.0.0"
+  }
+}
