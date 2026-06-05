@@ -4,15 +4,20 @@ const express = require("express");
 const http = require("http");
 const { Server } = require("socket.io");
 const { pool } = require("./lib/db");
-const {
-  isStorageConfigured,
-  uploadMulterFile,
-  listFiles,
-  storageBucket,
-} = require("./lib/storage");
 const cors = require("cors");
 const { OAuth2Client } = require("google-auth-library");
-const multer = require("multer");
+const {
+  initSupabaseStorage,
+  uploadBuffer,
+  listImagesInFolder,
+  resolveStorageFolder,
+} = require("./lib/supabaseStorage");
+const {
+  normalizeProduct,
+  matchesCategory,
+  matchesBrand,
+} = require("./lib/productMapper");
+const { upload } = require("./lib/multer");
 const nodemailer = require("nodemailer");
 const Imap = require("imap");
 const { simpleParser } = require("mailparser");
@@ -26,31 +31,16 @@ const io = new Server(server, {
     credentials: true,
   },
 });
-const PORT = process.env.PORT;
+const PORT = process.env.PORT || 5000;
 
-if (!isStorageConfigured) {
+const storageStatus = initSupabaseStorage();
+if (!storageStatus.configured) {
   console.warn(
-    "⚠️ Supabase storage is not configured. Set SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY (and create a public bucket, default: certifurb)."
+    "⚠️  Supabase Storage not configured. Set SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY."
   );
 } else {
-  console.log(`✅ Supabase storage ready (bucket: ${storageBucket})`);
+  console.log(`✅ Supabase Storage ready (bucket: ${storageStatus.bucket})`);
 }
-
-// Multer configuration for handling file uploads
-const storage = multer.memoryStorage();
-const upload = multer({
-  storage: storage,
-  limits: {
-    fileSize: 5 * 1024 * 1024, // 5MB limit
-  },
-  fileFilter: (req, file, cb) => {
-    if (file.mimetype.startsWith("image/")) {
-      cb(null, true);
-    } else {
-      cb(new Error("Only image files are allowed!"), false);
-    }
-  },
-});
 
 const googleClient = new OAuth2Client(
   process.env.GOOGLE_CLIENT_ID ||
@@ -64,28 +54,6 @@ app.use(cors({
 }));
 app.use(express.json({ limit: "10mb" }));
 app.use(express.urlencoded({ extended: true, limit: "10mb" }));
-
-const handleMulterError = (err, req, res, next) => {
-  if (!err) return next();
-  if (err.code === "LIMIT_FILE_SIZE") {
-    return res.status(400).json({
-      success: false,
-      message: "Image is too large. Maximum size is 5MB.",
-    });
-  }
-  if (err.message === "Only image files are allowed!") {
-    return res.status(400).json({
-      success: false,
-      message: "Only image files are allowed.",
-    });
-  }
-  console.error("Upload middleware error:", err);
-  return res.status(400).json({
-    success: false,
-    message: "Error uploading image",
-    error: err.message,
-  });
-};
 
 // Supabase PostgreSQL (see lib/db.js — uses DATABASE_URL or SUPABASE_URL + SUPABASE_DB_PASSWORD)
 (async () => {
@@ -589,11 +557,27 @@ app.get("/api/users", async (req, res) => {
 
 app.get("/api/products", async (req, res) => {
   try {
-    const [rows] = await pool.execute("SELECT * FROM product");
+    const { category, brand } = req.query;
+    const [rows] = await pool.execute("SELECT * FROM product ORDER BY \"ProductID\" DESC");
+
+    let products = rows.map(normalizeProduct);
+
+    if (category) {
+      products = products.filter((product) =>
+        matchesCategory(product.ProductCategory, category)
+      );
+    }
+
+    if (brand) {
+      products = products.filter((product) =>
+        matchesBrand(product.ProductBrand, brand)
+      );
+    }
+
     res.json({
       success: true,
-      data: rows,
-      message: "Products fetched successfully",
+      data: products,
+      message: `Found ${products.length} product(s)`,
     });
   } catch (error) {
     console.error("Error fetching products:", error);
@@ -622,7 +606,7 @@ app.get("/api/products/:id", async (req, res) => {
 
     res.json({
       success: true,
-      data: rows[0],
+      data: normalizeProduct(rows[0]),
       message: "Product fetched successfully",
     });
   } catch (error) {
@@ -645,7 +629,7 @@ app.get("/api/products/search/:name", async (req, res) => {
 
     res.json({
       success: true,
-      data: rows,
+      data: rows.map(normalizeProduct),
       message: `Found ${rows.length} products`,
     });
   } catch (error) {
@@ -971,10 +955,14 @@ app.put(
       // Handle image upload if new image is provided
       if (req.file) {
         try {
-          const uploadResult = await uploadMulterFile(
-            req.file,
-            "certifurb/products"
-          );
+          const uploadResult = await uploadBuffer(req.file.buffer, {
+            folder: resolveStorageFolder({
+              folder: "products",
+              uploadType: "product_image",
+            }),
+            contentType: req.file.mimetype,
+            originalName: req.file.originalname,
+          });
 
           productImageURL = uploadResult.secure_url;
           console.log("New image uploaded:", productImageURL);
@@ -1244,8 +1232,8 @@ app.get("/api/health", (req, res) => {
   res.json({
     success: true,
     message: "Server is running",
-    storage: isStorageConfigured ? "supabase" : "not_configured",
-    storageBucket: isStorageConfigured ? storageBucket : null,
+    storage: storageStatus.configured ? "supabase" : "not_configured",
+    storageBucket: storageStatus.configured ? storageStatus.bucket : null,
     timestamp: new Date().toISOString(),
   });
 });
@@ -1435,75 +1423,65 @@ app.post("/api/auth/google", async (req, res) => {
 // Image Upload Endpoints
 
 // Upload single product image with user/review context
-app.post("/api/upload-image", (req, res) => {
-  upload.single("image")(req, res, async (multerErr) => {
-    if (multerErr) {
-      return handleMulterError(multerErr, req, res, () => {});
-    }
-
-    try {
-      if (!isStorageConfigured) {
-        return res.status(500).json({
-          success: false,
-          message: "Image upload is not configured on the server",
-        });
-      }
-
-      if (!req.file) {
-        return res.status(400).json({
-          success: false,
-          message: "No image file provided. Use form field name 'image'.",
-        });
-      }
-
-      const { userId, userEmail, reviewId, productId, folder } = req.body;
-
-      let storageFolder;
-      if (folder === "products") {
-        storageFolder = "certifurb/products";
-      } else if (userId) {
-        storageFolder = `certifurb/reviews/user_${userId}`;
-      } else {
-        storageFolder = "certifurb/products";
-      }
-
-      const result = await uploadMulterFile(req.file, storageFolder);
-
-      res.json({
-        success: true,
-        message: "Image uploaded successfully",
-        data: {
-          url: result.url,
-          secure_url: result.secure_url,
-          publicId: result.publicId,
-          path: result.path,
-          size: result.size,
-          userId,
-          reviewId,
-          productId,
-        },
-      });
-    } catch (error) {
-      console.error("Error uploading image:", error);
-      res.status(500).json({
+app.post("/api/upload-image", upload.single("image"), async (req, res) => {
+  try {
+    if (!req.file) {
+      return res.status(400).json({
         success: false,
-        message: "Error uploading image",
-        error: error.message,
+        message: "No image file provided",
       });
     }
-  });
+
+    // Get user and review context from request body
+    const { userId, userEmail, reviewId, productId, context, folder } =
+      req.body;
+
+    if (!storageStatus.configured) {
+      return res.status(500).json({
+        success: false,
+        message: "Image upload is not configured on the server (Supabase Storage missing)",
+      });
+    }
+
+    const storageFolder = resolveStorageFolder({
+      folder,
+      userId,
+      uploadType: folder === "products" ? "product_image" : "review_image",
+    });
+
+    const result = await uploadBuffer(req.file.buffer, {
+      folder: storageFolder,
+      contentType: req.file.mimetype,
+      originalName: req.file.originalname,
+    });
+
+    res.json({
+      success: true,
+      message: "Image uploaded successfully",
+      data: {
+        url: result.secure_url,
+        secure_url: result.secure_url,
+        publicId: result.public_id,
+        path: result.path,
+        size: result.bytes,
+        userId,
+        reviewId,
+        productId,
+      },
+    });
+  } catch (error) {
+    console.error("Error uploading image:", error);
+    res.status(500).json({
+      success: false,
+      message: "Error uploading image",
+      error: error.message,
+    });
+  }
 });
 
 // Upload multiple review images
 app.post("/api/upload-images", upload.array("images", 5), async (req, res) => {
   try {
-    if (!isStorageConfigured) {
-      return res.status(500).json({
-        success: false,
-        message: "Image upload is not configured on the server",
-      });
-    }
-
     if (!req.files || req.files.length === 0) {
       return res.status(400).json({
         success: false,
@@ -1511,24 +1489,39 @@ app.post("/api/upload-images", upload.array("images", 5), async (req, res) => {
       });
     }
 
-    const { userId } = req.body;
-    const storageFolder = userId
-      ? `certifurb/reviews/user_${userId}`
-      : "certifurb/products";
+    if (!storageStatus.configured) {
+      return res.status(500).json({
+        success: false,
+        message: "Image upload is not configured on the server (Supabase Storage missing)",
+      });
+    }
 
-    const uploadResults = await Promise.all(
-      req.files.map((file) => uploadMulterFile(file, storageFolder))
-    );
+    const { userId, reviewId, productId } = req.body;
+    const storageFolder = resolveStorageFolder({ userId, uploadType: "review_image" });
+
+    const uploadPromises = req.files.map(async (file) => {
+      const result = await uploadBuffer(file.buffer, {
+        folder: storageFolder,
+        contentType: file.mimetype,
+        originalName: file.originalname,
+      });
+      return {
+        url: result.secure_url,
+        publicId: result.publicId || result.public_id,
+        path: result.path,
+        size: result.size || result.bytes,
+        userId,
+        reviewId,
+        productId,
+      };
+    });
+
+    const uploadResults = await Promise.all(uploadPromises);
 
     res.json({
       success: true,
       message: `${uploadResults.length} images uploaded successfully`,
-      data: uploadResults.map((result) => ({
-        url: result.url,
-        publicId: result.publicId,
-        path: result.path,
-        size: result.size,
-      })),
+      data: uploadResults,
     });
   } catch (error) {
     console.error("Error uploading images:", error);
@@ -1548,7 +1541,7 @@ app.post("/api/save-review", async (req, res) => {
       productId,
       reviewText,
       rating,
-      imageUrls, // Array of image URLs
+      imageUrls, // Array of image URLs (Supabase Storage)
     } = req.body;
 
     if (!userEmail || !productId || !reviewText) {
@@ -1672,27 +1665,28 @@ app.get("/api/reviews/user/:userEmail", async (req, res) => {
   }
 });
 
-// Get images by user ID
+// Get images by user ID (Supabase Storage folder: reviews/user_{userId})
 app.get("/api/images/user/:userId", async (req, res) => {
   try {
     const { userId } = req.params;
-    const { limit = 10, next_cursor } = req.query;
-    const offset = next_cursor ? parseInt(next_cursor, 10) : 0;
+    const { limit = 10 } = req.query;
 
-    const images = await listFiles(`certifurb/reviews/user_${userId}`, {
-      limit: parseInt(limit, 10),
-      offset: Number.isNaN(offset) ? 0 : offset,
-    });
+    if (!storageStatus.configured) {
+      return res.status(500).json({
+        success: false,
+        message: "Image storage is not configured",
+      });
+    }
 
-    const nextOffset = offset + images.length;
+    const images = await listImagesInFolder(`reviews/user_${userId}`, parseInt(limit, 10));
 
     res.json({
       success: true,
       message: `Found ${images.length} images for user ${userId}`,
       data: {
         images,
-        hasMore: images.length >= parseInt(limit, 10),
-        nextCursor: images.length >= parseInt(limit, 10) ? String(nextOffset) : null,
+        hasMore: false,
+        nextCursor: null,
         userId,
       },
     });
@@ -5042,6 +5036,27 @@ app.post("/api/auctionproducts", async (req, res) => {
       error: error.message,
     });
   }
+});
+
+app.use((err, req, res, next) => {
+  if (err.name === "MulterError") {
+    return res.status(400).json({
+      success: false,
+      message:
+        err.code === "LIMIT_FILE_SIZE"
+          ? "Image is too large (max 10MB)"
+          : err.message,
+    });
+  }
+  if (err && err.message === "Only image files are allowed!") {
+    return res.status(400).json({ success: false, message: err.message });
+  }
+  console.error("Unhandled error:", err);
+  res.status(500).json({
+    success: false,
+    message: "Internal server error",
+    error: err.message,
+  });
 });
 
 server.listen(PORT, '0.0.0.0', () => {
