@@ -21,7 +21,7 @@ const io = new Server(server, {
     credentials: true,
   },
 });
-const PORT = process.env.PORT || 5000;
+const PORT = process.env.PORT;
 
 // Cloudinary configuration
 cloudinary.config({
@@ -4406,104 +4406,6 @@ io.on("connection", (socket) => {
       }
     }
   });
-});
-
-server.listen(PORT, '0.0.0.0', () => {
-  console.log(`Server running on http://localhost:${PORT}`);
-  console.log(`Network access: http://192.168.100.18:${PORT}`);
-  console.log(`WebSocket server ready for Live Store connections`);
-  console.log(`Health check: http://localhost:${PORT}/api/health`);
-  console.log(`Get products: http://localhost:${PORT}/api/products`);
-  console.log(`Add product: http://localhost:${PORT}/api/products (POST)`);
-  console.log(`Login endpoint: http://localhost:${PORT}/api/login`);
-  console.log(`Register endpoint: http://localhost:${PORT}/api/register`);
-  console.log(`Save Card endpoint: http://localhost:${PORT}/api/save-card`);
-  console.log(`Get Card endpoint: http://localhost:${PORT}/api/get-card`);
-  console.log(`Google Auth endpoint: http://localhost:${PORT}/api/auth/google`);
-  console.log(
-    `Upload Image endpoint: http://localhost:${PORT}/api/upload-image`
-  );
-  console.log(
-    `Upload Images endpoint: http://localhost:${PORT}/api/upload-images`
-  );
-  console.log(
-    `Delete Image endpoint: http://localhost:${PORT}/api/delete-image/:publicId`
-  );
-  console.log(`Get All Images: http://localhost:${PORT}/api/images`);
-  console.log(
-    `Get Images by Folder: http://localhost:${PORT}/api/images/folder/:folderName`
-  );
-  console.log(
-    `Get Image Details: http://localhost:${PORT}/api/images/:publicId`
-  );
-  console.log(
-    `Search Images: http://localhost:${PORT}/api/images/search/:query`
-  );
-  console.log(
-    `Get User Images: http://localhost:${PORT}/api/images/user/:userId`
-  );
-  console.log(`Save Review: http://localhost:${PORT}/api/save-review`);
-  console.log(
-    `Get Product Reviews: http://localhost:${PORT}/api/reviews/product/:productId`
-  );
-  console.log(
-    `Get User Reviews: http://localhost:${PORT}/api/reviews/user/:userEmail`
-  );
-  console.log(
-    `Save User Review: http://localhost:${PORT}/api/save-user-review`
-  );
-  console.log(
-    `Get User Review: http://localhost:${PORT}/api/get-user-review/:userEmail`
-  );
-  console.log(
-    `Get All User Reviews: http://localhost:${PORT}/api/all-user-reviews`
-  );
-  console.log(`CMS Login endpoint: http://localhost:${PORT}/api/cms/login`);
-  console.log(`CMS Users endpoint: http://localhost:${PORT}/api/cms/users`);
-  console.log(`Get Emails: http://localhost:${PORT}/api/cms/emails`);
-  console.log(`Get Email: http://localhost:${PORT}/api/cms/emails/:emailId`);
-  console.log(
-    `Send Internal Message: http://localhost:${PORT}/api/cms/emails/send`
-  );
-  console.log(`Update Email: http://localhost:${PORT}/api/cms/emails/:emailId`);
-  console.log(`Delete Email: http://localhost:${PORT}/api/cms/emails/:emailId`);
-  console.log(`Bulk Emails: http://localhost:${PORT}/api/cms/emails/bulk`);
-  console.log(`Get Email Stats: http://localhost:${PORT}/api/cms/emails/stats`);
-  console.log(
-    `Get User Orders: http://localhost:${PORT}/api/user-orders/:userEmail`
-  );
-  console.log(`CMS Get All Orders: http://localhost:${PORT}/api/cms/orders`);
-  console.log(
-    `CMS Get Order Details: http://localhost:${PORT}/api/cms/orders/:orderId`
-  );
-  console.log(
-    `Save Product Review: http://localhost:${PORT}/api/save-product-review`
-  );
-  console.log(
-    `Get User Product Reviews: http://localhost:${PORT}/api/user-product-reviews/:userEmail`
-  );
-  console.log(`Setup Roles: http://localhost:${PORT}/api/setup-roles`);
-  console.log(
-    `Live Store API: http://localhost:${PORT}/api/live-store/request-connection`
-  );
-  console.log(
-    `Agent Status API: http://localhost:${PORT}/api/live-store/agent-status`
-  );
-  console.log(`Auction Login: http://localhost:${PORT}/api/auction/login`);
-  console.log(`Auction Apply: http://localhost:${PORT}/api/auction/apply`);
-  console.log(
-    `Auction Applications: http://localhost:${PORT}/api/auction/applications`
-  );
-  console.log(
-    `Auction Requests (CMS): http://localhost:${PORT}/api/auction/requests`
-  );
-  console.log(
-    `Auction Approve (CMS): http://localhost:${PORT}/api/auction/approve`
-  );
-  console.log(`Auction Deny (CMS): http://localhost:${PORT}/api/auction/deny`);
-  console.log(`Users (CMS): http://localhost:${PORT}/api/users`);
-  console.log(`Auction Products: http://localhost:${PORT}/api/auctionproducts`);
-  console.log(`Get Auction Product: http://localhost:${PORT}/api/auctionproducts/:id`);
 });
 
 // ===== DASHBOARD API ENDPOINTS =====
